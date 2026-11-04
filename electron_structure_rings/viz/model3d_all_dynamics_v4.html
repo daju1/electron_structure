@@ -1,0 +1,222 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">
+<title>v4: динамики, голономия, нейтральная 4-кольцевая частица</title>
+<style>
+body{margin:0;font-family:-apple-system,Segoe UI,Arial,sans-serif;background:#fafafa;color:#222}
+#warn{padding:6px 12px;background:#fff4d6;border-bottom:1px solid #e6c870;font-size:12.5px}
+#bar{padding:8px 12px;background:#fff;border-bottom:1px solid #ddd;display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px}
+#bar button{padding:4px 10px;border:1px solid #bbb;background:#f4f4f4;border-radius:4px;cursor:pointer}
+#bar button.on{background:#2b6cb0;color:#fff;border-color:#2b6cb0}
+#wrap{position:relative}canvas{display:block;cursor:grab}
+#info{position:absolute;right:10px;top:10px;width:320px;background:#fffffff2;border:1px solid #ddd;border-radius:6px;padding:10px;font-size:12px;line-height:1.4;max-height:88%;overflow:auto}
+#info td{border-top:1px solid #eee;padding:3px 2px;vertical-align:top}
+.lg span{display:inline-block;margin-right:10px}
+.ok{color:#1a7f37;font-weight:bold}.cond{color:#b7791f;font-weight:bold}.bad{color:#c53030;font-weight:bold}
+</style></head><body>
+<div id="warn">⚠ Все мёбиус-варианты — модели. Поворот b на π за обход при |b| = const не является дефектом Вольтерры линейной теории (deWit 1973, ур. 5.5): он допустим только в нелинейной теории (тензор Альманси, координаты Эйлера) или в среде Коссера / для директорного поля.</div>
+<div id="bar">
+ <button id="play">❚❚ Пауза</button>
+ <label>φ <input id="phi" type="range" min="0" max="720" value="0" step="1" style="width:200px"> <span id="phiv">0°</span></label>
+ <label>скорость <input id="spd" type="range" min="5" max="120" value="40"></label>
+ <b>Полюса N/S:</b> <span id="off"></span>
+ <label><input id="glide" type="checkbox" checked> glide-пары</label> <label><input id="hol" type="checkbox" checked> ось голономии (π-дисклинация)</label> <label><input id="four" type="checkbox" checked> 4-кольцевая нейтральная частица</label>
+ <span class="lg"><span style="color:#2a5bd7">● N</span><span style="color:#d22">● S</span><span style="color:#1a7f37">→ b (вектор)</span><span style="color:#1a7f37">— директор ±b</span>
+ <span>■ винт</span><span>◇ glide-край</span><span style="color:#e08a00">▲ призм. край</span><span>✕ разрез (ненаблюдаем)</span><span>⇒ шов Δb</span><span style="color:#c53030">◎ дисклинация в шве</span></span>
+</div>
+<div id="wrap"><canvas id="cv"></canvas>
+<div id="info"><b>Статус по теории</b>
+<table id="tab"></table>
+<p><b>Новое в v4:</b> красная ось/окружность — π-дисклинация, вокруг которой голономия поворачивает b на π
+((r,τ): клиновая по оси спина; (r,z),(z,τ): кручения). Справа — нейтральная 4-кольцевая частица из вложенных колец:
+Σb = 0 и при этом есть вращающийся поперечный диполь (фиолетовая стрелка). Перенос репера остаток пары не гасит
+(β = ±90° со скачком). Поворот на π: линейная деформация 2, тензор Альманси 0.</p>
+<p><b>Сумма по паре</b> (контур вокруг обоих колец): <span id="sum"></span></p>
+<p style="margin:6px 0 0">Источники: deWit 1973 II (4.3)–(5.5); Kleman–Friedel 2008 (k = ½); Fressengeas–Taupin 2020 (законы переноса α, θ). Мышь: вращать · колесо: масштаб · двойной клик: сброс.</p></div></div>
+<script>
+// rings_core_v3.js — математика всех динамик (v3, 3 ноя 2026)
+// Кольцо радиуса R в плоскости z = s·H; s=+1 — N, s=−1 — S. Базис кольца e_r, e_τ (линия), e_z.
+// φ = ω t — фаза прецессии. POLE_OFF — сдвиг фазы особых точек S относительно N (π — противофаза, 0 — в фазе).
+var R = 4.0, H = 3.0, B0 = 1.3, TWO_PI = 2 * Math.PI, POLE_OFF = Math.PI;
+var PLANES = { rz: ['r', 'z'], rt: ['r', 't'], tz: ['t', 'z'] };
+
+function mod2pi(x) { return ((x % TWO_PI) + TWO_PI) % TWO_PI; }
+function frame(th) {
+  return { r: [Math.cos(th), Math.sin(th), 0], t: [-Math.sin(th), Math.cos(th), 0], z: [0, 0, 1] };
+}
+function lin(a, ka, b, kb) { return [a[0] * ka + b[0] * kb, a[1] * ka + b[1] * kb, a[2] * ka + b[2] * kb]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function norm(a) { return Math.sqrt(dot(a, a)); }
+function poleAngle(s, phi) { return s > 0 ? phi : phi + POLE_OFF; }
+function cutAngle(s) { return s > 0 ? 0 : POLE_OFF; }
+
+// director: true — b определён с точностью до знака (рисуется без остриёв, разрез ненаблюдаем)
+// status: 'ok' — согласуется с теорией; 'cond' — при допущении; 'bad' — противоречие в текущем виде
+var KINDS = {
+  gT3:  { mobius: false, director: false, title: 'glide, строгая T(3)', sub: 'b постоянен и неподвижен', period: '—', stat: 'нет прецессии', status: 'ok' },
+  gCos: { mobius: false, director: false, title: 'glide, среда Коссера', sub: 'b переносится репером с ω', period: '2π', stat: 'бозон', status: 'cond' },
+  mA:   { mobius: true,  director: false, title: 'Мёбиус A', sub: 'b стоит, бежит шов (нужна дисклинация в шве)', period: '4π', stat: 'фермион', status: 'bad' },
+  mB:   { mobius: true,  director: true,  title: 'Мёбиус B', sub: 'директор ±b вращается с ω/2', period: '4π', stat: 'фермион', status: 'cond' },
+  mC:   { mobius: true,  director: false, title: 'Мёбиус C', sub: 'b с ω/2 + бегущий шов', period: '2π', stat: 'бозон (контрпример)', status: 'ok' }
+};
+
+function burgers(kind, s, th, phi, plane) {
+  if (kind === 'gT3') return [s * B0, 0, 0];
+  if (kind === 'gCos') return [s * B0 * Math.cos(phi), s * B0 * Math.sin(phi), 0];
+  var f = frame(th), u = f[PLANES[plane][0]], v = f[PLANES[plane][1]], psi;
+  if (kind === 'mA') psi = mod2pi(th - poleAngle(s, phi)) / 2 + phi / 2;
+  else if (kind === 'mB') psi = -mod2pi(th - cutAngle(s)) / 2 + phi / 2;
+  else psi = mod2pi(th - poleAngle(s, phi)) / 2 + phi;
+  return lin(u, s * B0 * Math.cos(psi), v, s * B0 * Math.sin(psi));
+}
+
+// Бегущая особая точка (null — у динамики её нет)
+function specialPoint(kind, s, phi) {
+  if (kind === 'gT3' || kind === 'gCos') return null;
+  if (kind === 'mB') return cutAngle(s) + mod2pi(phi);
+  return poleAngle(s, phi);
+}
+// Шов со скачком b (только для векторных A и C; у директора B скачка нет)
+function seamAngle(kind, s, phi) { return (kind === 'mA' || kind === 'mC') ? poleAngle(s, phi) : null; }
+function seamJump(kind, s, phi, plane) {
+  var a = seamAngle(kind, s, phi), e = 1e-7;
+  if (a === null) return [0, 0, 0];
+  return lin(burgers(kind, s, a - e, phi, plane), 1, burgers(kind, s, a + e, phi, plane), -1);
+}
+
+// Суммарный b по контуру, охватывающему оба кольца, в азимутальной точке th (для директора — min по знаку)
+function pairSum(kind, th, phi, plane) {
+  var bN = burgers(kind, 1, th, phi, plane), bS = burgers(kind, -1, th, phi, plane);
+  var a = norm(lin(bN, 1, bS, 1));
+  if (KINDS[kind].director) a = Math.min(a, norm(lin(bN, 1, bS, -1)));
+  return a;
+}
+function pairSumMax(kind, phi, plane) {
+  var m = 0;
+  for (var i = 0; i < 72; i++) m = Math.max(m, pairSum(kind, 0.013 + TWO_PI * i / 72, phi, plane));
+  return m;
+}
+
+function charPoints(kind, s, phi, plane) {
+  var n = 720, out = { t: [], r: [], z: [] }, seam = seamAngle(kind, s, phi);
+  ['t', 'r', 'z'].forEach(function (key) {
+    var c = [];
+    for (var i = 0; i < n; i++) {
+      var th = TWO_PI * i / n, b = burgers(kind, s, th, phi, plane);
+      c.push(Math.abs(dot(b, frame(th)[key])) / B0);
+    }
+    for (var i = 0; i < n; i++) {
+      var p = c[(i - 1 + n) % n], q = c[(i + 1) % n];
+      if (c[i] > 0.985 && c[i] >= p && c[i] > q) {
+        var th = TWO_PI * i / n;
+        if (seam !== null && Math.abs(mod2pi(th - seam + Math.PI) - Math.PI) < 0.03) continue;
+        out[key].push(th);
+      }
+    }
+  });
+  return out;
+}
+
+if (typeof module !== 'undefined') module.exports = {
+  burgers: burgers, specialPoint: specialPoint, seamJump: seamJump, charPoints: charPoints, pairSumMax: pairSumMax,
+  KINDS: KINDS, PLANES: PLANES, B0: B0, frame: frame, dot: dot, lin: lin, norm: norm,
+  setPoleOff: function (x) { POLE_OFF = x; }
+};
+
+var PL=['rz','rt','tz'], PLN={rz:'(r, z)',rt:'(r, τ)',tz:'(z, τ)'};
+var ROWS=['mA','mB','mC'], SP=13, cells=[];
+ROWS.forEach(function(k,i){PL.forEach(function(p,j){cells.push({k:k,pl:p,o:[(j-1)*SP,(1-i)*SP*1.25]});});});
+var glideCells=[{k:'gT3',pl:'rz',o:[-2.3*SP,SP*0.7]},{k:'gCos',pl:'rz',o:[-2.3*SP,-SP*0.7]}];
+var STAT={ok:'согласуется',cond:'при допущении',bad:'противоречие в текущем виде'};
+var NOTE={gT3:'deWit (3.6): b постоянен вдоль линии; бегущей особой точки нет.',
+ gCos:'Поворот b = поворот репера (Коссер) или ток дислокаций между кольцами; Δb нет, q_m нет.',
+ mA:'Шов со скачком b: по (4.3) дислокации кончаются только на дисклинациях → в шве нужна дисклинация (◎); движущаяся дисклинация рождает поток дислокаций (Fressengeas–Taupin). При противофазе сеть не замыкается: b_N+b_S≠0.',
+ mB:'Законно, если b — директор (k=½, Kleman–Friedel): разрез ненаблюдаем, Δb нет → q_m надо искать не в шве. Стрелки без остриёв.',
+ mC:'Вращение ω/2 + бегущий шов: за 2π b→b — бозон, не электрон.'};
+var playing=true, phi=0, last=null;
+var cv=document.getElementById('cv'), cx=cv.getContext('2d');
+var yaw=-0.25, pitch=0.95, zoom=1, drag=null;
+function resize(){cv.width=innerWidth;cv.height=innerHeight-document.getElementById('bar').offsetHeight-document.getElementById('warn').offsetHeight;}
+addEventListener('resize',resize);resize();
+cv.onmousedown=function(e){drag=[e.clientX,e.clientY,yaw,pitch];cv.style.cursor='grabbing'};
+addEventListener('mouseup',function(){drag=null;cv.style.cursor='grab'});
+addEventListener('mousemove',function(e){if(!drag)return;yaw=drag[2]+(e.clientX-drag[0])*0.008;pitch=Math.max(-1.5,Math.min(1.5,drag[3]+(e.clientY-drag[1])*0.008));});
+cv.onwheel=function(e){e.preventDefault();zoom*=Math.exp(-e.deltaY*0.001)};
+cv.ondblclick=function(){yaw=-0.25;pitch=0.95;zoom=1};
+function P(p){var x=p[0],y=p[1],z=p[2],cy=Math.cos(yaw),sy=Math.sin(yaw);
+  var x1=x*cy-y*sy, y1=x*sy+y*cy, cp=Math.cos(pitch),sp=Math.sin(pitch);
+  var y2=y1*cp-z*sp, z2=y1*sp+z*cp, f=900/(110+y2), sc=Math.min(cv.width*0.8,cv.height)/700*zoom;
+  return [cv.width*0.44+x1*f*sc, cv.height*0.5-z2*f*sc, y2];}
+function ringPt(th,z,o,rr){rr=rr||R;return [o[0]+rr*Math.cos(th),o[1]+rr*Math.sin(th),z];}
+var items;
+function seg(a,b,col,w,dash){items.push({d:(P(a)[2]+P(b)[2])/2,f:function(){var A=P(a),B=P(b);cx.strokeStyle=col;cx.lineWidth=w;cx.setLineDash(dash||[]);cx.beginPath();cx.moveTo(A[0],A[1]);cx.lineTo(B[0],B[1]);cx.stroke();cx.setLineDash([]);}});}
+function arrow(a,v,col,w,head){var b=[a[0]+v[0],a[1]+v[1],a[2]+v[2]];items.push({d:P(b)[2],f:function(){var A=P(a),B=P(b);cx.strokeStyle=col;cx.fillStyle=col;cx.lineWidth=w||1.8;cx.beginPath();cx.moveTo(A[0],A[1]);cx.lineTo(B[0],B[1]);cx.stroke();if(head===false)return;var an=Math.atan2(B[1]-A[1],B[0]-A[0]);cx.beginPath();cx.moveTo(B[0],B[1]);cx.lineTo(B[0]-7*Math.cos(an-0.4),B[1]-7*Math.sin(an-0.4));cx.lineTo(B[0]-7*Math.cos(an+0.4),B[1]-7*Math.sin(an+0.4));cx.fill();}});}
+function mark(p,kind,col,size){items.push({d:P(p)[2]-0.01,f:function(){var A=P(p),s=size||5;cx.lineWidth=1.3;cx.strokeStyle='#000';cx.fillStyle=col;cx.beginPath();
+ if(kind==='o')cx.arc(A[0],A[1],s,0,7);else if(kind==='s')cx.rect(A[0]-s,A[1]-s,2*s,2*s);else if(kind==='d'){cx.moveTo(A[0],A[1]-s);cx.lineTo(A[0]+s,A[1]);cx.lineTo(A[0],A[1]+s);cx.lineTo(A[0]-s,A[1]);cx.closePath();}
+ else if(kind==='t'){cx.moveTo(A[0],A[1]-s);cx.lineTo(A[0]+s,A[1]+s);cx.lineTo(A[0]-s,A[1]+s);cx.closePath();}
+ else if(kind==='ring'){cx.strokeStyle=col;cx.lineWidth=2.5;cx.arc(A[0],A[1],s,0,7);cx.stroke();return;}
+ else if(kind==='x'){cx.strokeStyle='#666';cx.moveTo(A[0]-s,A[1]-s);cx.lineTo(A[0]+s,A[1]+s);cx.moveTo(A[0]+s,A[1]-s);cx.lineTo(A[0]-s,A[1]+s);cx.lineWidth=2;cx.stroke();return;}
+ cx.fill();cx.stroke();}});}
+function text(p,s,col,font){items.push({d:-1e9,f:function(){var A=P(p);cx.font=font||'bold 12px Arial';cx.fillStyle=col||'#000';cx.textAlign='center';s.split('\n').forEach(function(l,i){cx.fillText(l,A[0],A[1]+i*14);});}});}
+var SC={ok:'#1a7f37',cond:'#b7791f',bad:'#c53030'};
+function drawParticle(c){
+  var k=c.k,pl=c.pl,o=c.o,K=KINDS[k];
+  [[1,H,'#2a5bd7'],[-1,-H,'#d22']].forEach(function(q){
+    var s=q[0],z=q[1],col=q[2],n=60;
+    for(var i=0;i<n;i++)seg(ringPt(2*Math.PI*i/n,z,o),ringPt(2*Math.PI*(i+1)/n,z,o),col,2.5);
+    for(var i=0;i<14;i++){var th=0.02+2*Math.PI*i/14,b=burgers(k,s,th,phi,pl),p0=ringPt(th,z,o);
+      if(K.director){arrow([p0[0]-b[0]/2,p0[1]-b[1]/2,p0[2]-b[2]/2],b,'#1a7f37',2.4,false);} else arrow(p0,b,'#1a7f37');}
+    var cp=charPoints(k,s,phi,pl);
+    cp.t.forEach(function(th){mark(ringPt(th,z,o),'s','#f2c500')});cp.r.forEach(function(th){mark(ringPt(th,z,o),'d','#fff')});cp.z.forEach(function(th){mark(ringPt(th,z,o),'t','#e08a00')});
+    var sp=specialPoint(k,s,phi); if(sp!==null) mark(ringPt(sp,z,o),'o',col,7);
+    if(k==='mB') mark(ringPt(cutAngle(s),z,o),'x','#666',5);
+    var sa=seamAngle(k,s,phi);
+    if(sa!==null){var J=seamJump(k,s,phi,pl),b=ringPt(sa,z,o); arrow(b,[J[0]*0.5,J[1]*0.5,J[2]*0.5],'#000',2.5);
+      if(k==='mA') mark(b,'ring','#c53030',11);}
+    if(k==='gT3') text([o[0]+R+1.2,o[1],z],'(особой точки нет)','#666','11px Arial');
+  });
+  if(K.mobius){var pn=ringPt(specialPoint(k,1,phi),H,o), ps=ringPt(specialPoint(k,-1,phi),-H,o);
+    seg(pn,ps,k==='mA'?'#8a2be2':'#999',k==='mA'?2.5:1.2,k==='mA'?[]:[4,4]);}
+  if(K.mobius&&document.getElementById('hol').checked){var ax={rt:[0,0,1],rz:null,tz:null}[pl];
+    if(ax){seg([o[0],o[1],-H-2.4],[o[0],o[1],H+2.4],'#c53030',6,[8,4]);text([o[0]+0.8,o[1],-H-2.8],'клиновая π-дисклинация','#c53030','11px Arial');}
+    else{for(var i=0;i<40;i++){var a1=2*Math.PI*i/40,a2=2*Math.PI*(i+1)/40;seg(ringPt(a1,0,o,R*1.15),ringPt(a2,0,o,R*1.15),'#c53030',2.5,[5,4]);}
+      text(ringPt(-0.6,0,o,R*1.3),'π-дисклинация кручения','#c53030','11px Arial');}}
+  seg([o[0],o[1],-H-1.6],[o[0],o[1],H+1.6],'#7b2cbf',3);
+  var ps2=pairSumMax(k,phi,pl)/B0;
+  var lab=(K.mobius?(K.title+' · '+PLN[pl]):K.title)+'\nпериод '+K.period+' · '+K.stat+'\n'+STAT[K.status]+' · |b_N+b_S|max = '+ps2.toFixed(2)+' b₀';
+  text([o[0],o[1],H+3.6],lab,SC[K.status]);
+}
+
+var RHO=0.7, FOUR_O=[2.3*SP,0];
+function drawFour(){
+  var o=FOUR_O, k='mB', pl='rt';
+  var rings=[[1,0,H,R,'#2a5bd7'],[-1,Math.PI,-H,R,'#d22'],[1,Math.PI,0.5*H,RHO*R,'#6f9cf0'],[-1,0,-0.5*H,RHO*R,'#f08080']];
+  rings.forEach(function(q){var s=q[0],al=q[1],z=q[2],rr=q[3],col=q[4],n=60;
+    for(var i=0;i<n;i++)seg(ringPt(2*Math.PI*i/n,z,o,rr),ringPt(2*Math.PI*(i+1)/n,z,o,rr),col,2.5);
+    for(var i=0;i<12;i++){var th=0.02+2*Math.PI*i/12;
+      var f=frame(th),u=f.r,v=f.t,psi=-mod2pi(th-al)/2+phi/2,b=lin(u,s*B0*Math.cos(psi),v,s*B0*Math.sin(psi)),p0=ringPt(th,z,o,rr);
+      arrow([p0[0]-b[0]/2,p0[1]-b[1]/2,p0[2]-b[2]/2],b,'#1a7f37',2.2,false);}
+    mark(ringPt(al+mod2pi(phi),z,o,rr),'o',col,6);});
+  var px=0,py=0;rings.forEach(function(q){px+=q[0]*q[3]*Math.cos(phi+q[1]+mod2pi(0));py+=q[0]*q[3]*Math.sin(phi+q[1]);});
+  arrow([o[0],o[1],0],[px*0.6,py*0.6,0],'#8a2be2',3);
+  seg([o[0],o[1],-H-1.6],[o[0],o[1],H+1.6],'#7b2cbf',3);
+  text([o[0],o[1],H+3.6],'4 вложенных кольца (ρ='+RHO+', директор, (r,τ))\nΣb = 0 · вращающийся поперечный диполь p⊥ = 2(1−ρ)R\nсогласуется при допущении (нелинейная теория / директор)','#b7791f');
+}
+function frame_(t){
+  if(last===null)last=t; var dt=(t-last)/1000; last=t;
+  if(playing){phi=(phi+dt*(+document.getElementById('spd').value)*Math.PI/180)%(4*Math.PI);document.getElementById('phi').value=Math.round(phi*180/Math.PI);}
+  document.getElementById('phiv').textContent=Math.round(phi*180/Math.PI)+'° (оборот '+(phi<2*Math.PI?1:2)+' из 2)';
+  cx.clearRect(0,0,cv.width,cv.height); items=[];
+  cells.forEach(drawParticle);
+  if(document.getElementById('glide').checked)glideCells.forEach(drawParticle);
+  if(document.getElementById('four').checked)drawFour();
+  items.sort(function(a,b){return b.d-a.d}).forEach(function(i){i.f()});
+  var m=0;ROWS.forEach(function(k){PL.forEach(function(p){m=Math.max(m,pairSumMax(k,phi,p))})});
+  document.getElementById('sum').innerHTML=POLE_OFF>1?'<span class="bad">≠ 0 (до '+(m/B0).toFixed(2)+' b₀)</span>: при противофазе ни один закон твиста S не гасит сумму — пара несёт суммарный b (проверено перебором).':'<span class="ok">= 0</span> при полюсах в фазе — но тогда нет вращающегося поперечного диполя (как в draw_scheme).';
+  requestAnimationFrame(frame_);
+}
+var off=document.getElementById('off');
+[[Math.PI,'в противофазе (180°, как в статье)'],[0,'в фазе (0°)']].forEach(function(v){var b=document.createElement('button');b.textContent=v[1];b.onclick=function(){POLE_OFF=v[0];[].forEach.call(off.children,function(c){c.className=''});b.className='on'};if(v[0]===POLE_OFF)b.className='on';off.appendChild(b);});
+document.getElementById('play').onclick=function(){playing=!playing;this.textContent=playing?'❚❚ Пауза':'▶ Play'};
+document.getElementById('phi').oninput=function(){phi=this.value*Math.PI/180;playing=false;document.getElementById('play').textContent='▶ Play'};
+var tab=document.getElementById('tab');['gT3','gCos','mA','mB','mC'].forEach(function(k){var r=tab.insertRow();r.insertCell().innerHTML='<b>'+KINDS[k].title+'</b><br><span class="'+KINDS[k].status+'">'+STAT[KINDS[k].status]+'</span>';r.insertCell().textContent=NOTE[k];});
+requestAnimationFrame(frame_);
+</script></body></html>
